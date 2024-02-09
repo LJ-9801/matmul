@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <stdio.h>
 
 
 
@@ -285,9 +286,35 @@ int main(){
     A[i] = 1.0f;
     B[i] = 1.0f;
   }
-  
-  gemm(false, false, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
 
+  // time
+  struct timespec start, end;
+
+  // get time
+  printf("Starting gemm_nn\n"); 
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  gemm(false, false, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  printf("Finished gemm_nn with time: %lf\n\n", (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9);
+
+  printf("Starting gemm_nt\n");
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  transpose(M, N, B);
+  gemm(false, true, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  printf("Finished gemm_nt with time: %lf\n\n", (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9);
+
+  printf("Starting gemm_tn\n");
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  gemm(true, false, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  printf("Finished gemm_tn with time: %lf\n\n", (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9);
+
+  printf("Starting gemm_tt\n");
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  gemm(true, true, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  printf("Finished gemm_tt with time: %lf\n\n", (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9);
 
   return 0;
 }
