@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <arm_neon.h>
 
 #define get_ns(start, end) ((end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9)
 
@@ -11,6 +12,51 @@
 // B has shape (k, n)
 // C has shape (m, n)
  
+inline float32_t dot(const float* a, const float* b, int n){
+  float32_t sum = 0;
+  int i;
+
+  // Process elements in chunks of 4
+  #pragma unroll
+  for(i = 0; i <= n-4; i+=4){
+    float32x4_t va = vld1q_f32(a+i);
+    float32x4_t vb = vld1q_f32(b+i);
+    float32x4_t vc = vmulq_f32(va, vb); 
+    sum += vaddvq_f32(vc);
+  }
+
+  // Process remaining elements
+  float32x2_t va_low = vdup_n_f32(0);
+  float32x2_t va_high = vdup_n_f32(0);
+  float32x2_t vb_low = vdup_n_f32(0);
+  float32x2_t vb_high = vdup_n_f32(0);
+
+  if (n-i > 0) {
+    va_low = vld1_lane_f32(a+i, va_low, 0);
+    vb_low = vld1_lane_f32(b+i, vb_low, 0);
+  }
+  if (n-i > 1) {
+    va_low = vld1_lane_f32(a+i+1, va_low, 1);
+    vb_low = vld1_lane_f32(b+i+1, vb_low, 1);
+  }
+  if (n-i > 2) {
+    va_high = vld1_lane_f32(a+i+2, va_high, 0);
+    vb_high = vld1_lane_f32(b+i+2, vb_high, 0);
+  }
+  if (n-i > 3) {
+    va_high = vld1_lane_f32(a+i+3, va_high, 1);
+    vb_high = vld1_lane_f32(b+i+3, vb_high, 1);
+  }
+
+  float32x4_t va = vcombine_f32(va_low, va_high);
+  float32x4_t vb = vcombine_f32(vb_low, vb_high);
+
+  float32x4_t vc = vmulq_f32(va, vb); 
+  sum += vaddvq_f32(vc);
+
+  return sum;
+}
+
 
 struct gemm_args {
     size_t start, end, M, N, K, lda, ldb, ldc;
@@ -26,16 +72,12 @@ void* thread_gemm_nn(void* args) {
     for (size_t ti = a->start; ti < end; ti += TILE) {
       for (size_t tj = 0; tj < a->N; tj += TILE) {
         for (size_t tk = 0; tk < a->K; tk += TILE) {
-          size_t ti_max = ti + TILE < a->end ? ti + TILE : a->end;
+          size_t ti_max = ti + TILE < a->end ? ti + TILE : end;
           size_t tj_max = tj + TILE < a->N ? tj + TILE : a->N;
           size_t tk_max = tk + TILE < a->K ? tk + TILE : a->K;
           for (size_t i = ti; i < ti_max; i++) {
             for (size_t j = tj; j < tj_max; j++) {
-              float sum = 0.0f;
-              #pragma unroll
-              for (size_t k = tk; k < tk_max; k++) {
-                sum += a->alpha * a->A[i * a->lda + k] * a->B[k * a->ldb + j];
-              }
+              float32_t sum = dot(&a->A[i * a->lda + tk], &a->B[tk * a->ldb + j], tk_max - tk); 
               a->C[i * a->ldc + j] += sum + a->beta;
             }
           }
@@ -53,16 +95,12 @@ void* thread_gemm_nt(void* args){
   for (size_t ti = arg->start; ti < end; ti += TILE) {
     for (size_t tj = 0; tj < arg->N; tj += TILE) {
       for (size_t tk = 0; tk < arg->K; tk += TILE) {
-        size_t ti_max = ti + TILE < arg->end ? ti + TILE : arg->end;
+        size_t ti_max = ti + TILE < arg->end ? ti + TILE : end;
         size_t tj_max = tj + TILE < arg->N ? tj + TILE : arg->N;
         size_t tk_max = tk + TILE < arg->K ? tk + TILE : arg->K;
         for (size_t i = ti; i < ti_max; i++) {
           for (size_t j = tj; j < tj_max; j++) {
-            float sum = 0.0f;
-            #pragma unroll
-            for (size_t k = tk; k < tk_max; k++) {
-              sum += arg->alpha * arg->A[i * arg->lda + k] * arg->B[j * arg->lda + k]; 
-            }
+            float sum = dot(&arg->A[i * arg->lda + tk], &arg->B[j * arg->lda + tk], tk_max - tk);
             arg->C[i * arg->ldc + j] += sum + arg->beta; 
           }
         }
@@ -80,16 +118,12 @@ void* thread_gemm_tn(void* args){
   for(size_t ti = arg->start; ti < end; ti += TILE){
     for(size_t tj = 0; tj < arg->N; tj += TILE){
       for(size_t tk = 0; tk < arg->K; tk += TILE){
-        size_t ti_max = ti + TILE < arg->end ? ti + TILE : arg->end;
+        size_t ti_max = ti + TILE < arg->end ? ti + TILE : end;
         size_t tj_max = tj + TILE < arg->N ? tj + TILE : arg->N;
         size_t tk_max = tk + TILE < arg->K ? tk + TILE : arg->K;
         for(size_t i = ti; i < ti_max; i++){
           for(size_t j = tj; j < tj_max; j++){
-            float sum = 0.0f;
-            #pragma unroll
-            for(size_t k = tk; k < tk_max; k++){
-              sum += arg->alpha * arg->A[k * arg->ldb + i] * arg->B[k * arg->ldb + j];
-            }
+            float sum = dot(&arg->A[tk * arg->ldb + i], &arg->B[tk * arg->ldb + j], tk_max - tk);
             arg->C[i * arg->ldc + j] += sum + arg->beta;
           }
         }
@@ -108,16 +142,12 @@ void* thread_gemm_tt(void* args){
   for (size_t ti = arg->start; ti < end; ti += TILE) {
     for (size_t tj = 0; tj < arg->N; tj += TILE) {
       for (size_t tk = 0; tk < arg->K; tk += TILE) {
-        size_t ti_max = ti + TILE < arg->end ? ti + TILE : arg->end;
+        size_t ti_max = ti + TILE < arg->end ? ti + TILE : end;
         size_t tj_max = tj + TILE < arg->N ? tj + TILE : arg->N;
         size_t tk_max = tk + TILE < arg->K ? tk + TILE : arg->K;
         for (size_t i = ti; i < ti_max; i++) {
           for (size_t j = tj; j < tj_max; j++) {
-            float sum = 0.0f;
-            #pragma unroll
-            for (size_t k = tk; k < tk_max; k++) {
-              sum += arg->alpha * arg->A[k * arg->ldb + i] * arg->B[j * arg->lda + k];
-            }
+            float sum = dot(&arg->A[tk * arg->ldb + i], &arg->B[j * arg->lda + tk], tk_max - tk);
             arg->C[i * arg->ldc + j] += sum + arg->beta;
           }
         }
@@ -297,7 +327,7 @@ void gemm(bool transA, bool transB,
 
 int main(){
 
-  size_t M = 1024;
+  size_t M = 2048;
   size_t K = 2048;
   size_t N = 2048;
 
@@ -324,8 +354,8 @@ int main(){
   printf("Finished gemm_nn with time: %lf ns\n\n", get_ns(start, end));
 
   printf("Starting gemm_nt\n");
-  clock_gettime(CLOCK_MONOTONIC, &start);
   transpose(M, N, B);
+  clock_gettime(CLOCK_MONOTONIC, &start);
   gemm(false, true, M, N, K, K, N, N, A, B, C, 1.0f, 0.0f); 
   clock_gettime(CLOCK_MONOTONIC, &end);
   printf("Finished gemm_nt with time: %lf ns\n\n", get_ns(start, end));
@@ -342,5 +372,9 @@ int main(){
   clock_gettime(CLOCK_MONOTONIC, &end);
   printf("Finished gemm_tt with time: %lf ns\n\n", get_ns(start, end));
 
+  free(A);
+  free(B);
+  free(C); 
+  
   return 0;
 }
