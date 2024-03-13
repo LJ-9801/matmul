@@ -12,12 +12,12 @@
 // B has shape (k, n)
 // C has shape (m, n)
  
-inline float32_t dot(const float* a, const float* b, int n){
+static inline float32_t dot(const float* a, const float* b, int n){
   float32_t sum = 0;
   int i;
 
   // Process elements in chunks of 4
-  #pragma unroll
+  #pragma unroll(4)
   for(i = 0; i <= n-4; i+=4){
     float32x4_t va = vld1q_f32(a+i);
     float32x4_t vb = vld1q_f32(b+i);
