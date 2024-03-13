@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <arm_neon.h>
+#include <cblas.h>
 
 #define get_ns(start, end) ((end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9)
 
@@ -371,6 +372,13 @@ int main(){
   gemm(true, true, M, N, K, K, N, N, A, B, C, 1.0f, 0.0f);
   clock_gettime(CLOCK_MONOTONIC, &end);
   printf("Finished gemm_tt with time: %lf ns\n\n", get_ns(start, end));
+  
+
+  printf("Starting cblas_dgemm\n");
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K, 1.0f, A, K, B, N, 0.0f, C, N);
+  clock_gettime(CLOCK_MONOTONIC, &end);
+  printf("Finished cblas_dgemm with time: %lf ns\n\n", get_ns(start, end));
 
   free(A);
   free(B);
