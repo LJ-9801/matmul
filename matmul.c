@@ -6,14 +6,14 @@
 
 #define get_ns(start, end) ((end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9)
 
-#define TILE 64
+#define TILE 16
 // A has shape (m, k)
 // B has shape (k, n)
 // C has shape (m, n)
  
 
 struct gemm_args {
-    size_t start, end, N, K, lda, ldb, ldc;
+    size_t start, end, M, N, K, lda, ldb, ldc;
     const float *A, *B; 
     float *C, alpha, beta;
 };
@@ -21,7 +21,9 @@ struct gemm_args {
 void* thread_gemm_nn(void* args) {
     struct gemm_args* a = (struct gemm_args*)args;
 
-    for (size_t ti = a->start; ti < a->end; ti += TILE) {
+    size_t end = a->end > a->M ? a->M : a->end;
+
+    for (size_t ti = a->start; ti < end; ti += TILE) {
       for (size_t tj = 0; tj < a->N; tj += TILE) {
         for (size_t tk = 0; tk < a->K; tk += TILE) {
           size_t ti_max = ti + TILE < a->end ? ti + TILE : a->end;
@@ -34,7 +36,7 @@ void* thread_gemm_nn(void* args) {
               for (size_t k = tk; k < tk_max; k++) {
                 sum += a->alpha * a->A[i * a->lda + k] * a->B[k * a->ldb + j];
               }
-              a->C[i * a->ldc + j] = sum + a->beta * a->C[i * a->ldc + j];
+              a->C[i * a->ldc + j] += sum + a->beta;
             }
           }
         }
@@ -46,7 +48,9 @@ void* thread_gemm_nn(void* args) {
 void* thread_gemm_nt(void* args){
   struct gemm_args* arg = (struct gemm_args*) args;
 
-  for (size_t ti = arg->start; ti < arg->end; ti += TILE) {
+  size_t end = arg->end > arg->M ? arg->M : arg->end;
+
+  for (size_t ti = arg->start; ti < end; ti += TILE) {
     for (size_t tj = 0; tj < arg->N; tj += TILE) {
       for (size_t tk = 0; tk < arg->K; tk += TILE) {
         size_t ti_max = ti + TILE < arg->end ? ti + TILE : arg->end;
@@ -57,9 +61,9 @@ void* thread_gemm_nt(void* args){
             float sum = 0.0f;
             #pragma unroll
             for (size_t k = tk; k < tk_max; k++) {
-              sum += arg->alpha * arg->A[i * arg->lda + k] * arg->B[j * arg->ldb + k];
+              sum += arg->alpha * arg->A[i * arg->lda + k] * arg->B[j * arg->lda + k]; 
             }
-            arg->C[i * arg->ldc + j] = sum + arg->beta * arg->C[i * arg->ldc + j];
+            arg->C[i * arg->ldc + j] += sum + arg->beta; 
           }
         }
       }
@@ -71,7 +75,9 @@ void* thread_gemm_nt(void* args){
 void* thread_gemm_tn(void* args){
   struct gemm_args* arg = (struct gemm_args*) args;
 
-  for(size_t ti = arg->start; ti < arg->end; ti += TILE){
+  size_t end = arg->end > arg->M ? arg->M : arg->end;
+
+  for(size_t ti = arg->start; ti < end; ti += TILE){
     for(size_t tj = 0; tj < arg->N; tj += TILE){
       for(size_t tk = 0; tk < arg->K; tk += TILE){
         size_t ti_max = ti + TILE < arg->end ? ti + TILE : arg->end;
@@ -82,9 +88,9 @@ void* thread_gemm_tn(void* args){
             float sum = 0.0f;
             #pragma unroll
             for(size_t k = tk; k < tk_max; k++){
-              sum += arg->alpha * arg->A[k * arg->lda + i] * arg->B[k * arg->ldb + j];
+              sum += arg->alpha * arg->A[k * arg->ldb + i] * arg->B[k * arg->ldb + j];
             }
-            arg->C[i * arg->ldc + j] = sum + arg->beta * arg->C[i * arg->ldc + j];
+            arg->C[i * arg->ldc + j] += sum + arg->beta;
           }
         }
       }
@@ -97,7 +103,9 @@ void* thread_gemm_tn(void* args){
 void* thread_gemm_tt(void* args){
   struct gemm_args* arg = (struct gemm_args*) args;
 
-  for (size_t ti = arg->start; ti < arg->end; ti += TILE) {
+  size_t end = arg->end > arg->M ? arg->M : arg->end;
+
+  for (size_t ti = arg->start; ti < end; ti += TILE) {
     for (size_t tj = 0; tj < arg->N; tj += TILE) {
       for (size_t tk = 0; tk < arg->K; tk += TILE) {
         size_t ti_max = ti + TILE < arg->end ? ti + TILE : arg->end;
@@ -108,9 +116,9 @@ void* thread_gemm_tt(void* args){
             float sum = 0.0f;
             #pragma unroll
             for (size_t k = tk; k < tk_max; k++) {
-              sum += arg->alpha * arg->A[k * arg->lda + i] * arg->B[j * arg->ldb + k];
+              sum += arg->alpha * arg->A[k * arg->ldb + i] * arg->B[j * arg->lda + k];
             }
-            arg->C[i * arg->ldc + j] = sum + arg->beta * arg->C[i * arg->ldc + j];
+            arg->C[i * arg->ldc + j] += sum + arg->beta;
           }
         }
       }
@@ -122,15 +130,19 @@ void* thread_gemm_tt(void* args){
 // non-transpose for both A and B
 void gemm_nn(size_t M, size_t N, size_t K, size_t lda, size_t ldb, size_t ldc,
               const float* A, const float* B, float* C, float alpha, float beta) {
-  uint16_t NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  uint16_t MAX_NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  // thread count should be less than or equal to M
+  uint16_t NUM_THREADS = M < MAX_NUM_THREADS ? M : MAX_NUM_THREADS;
   pthread_t threads[NUM_THREADS];
   struct gemm_args args[NUM_THREADS];
-  size_t chunk = M / NUM_THREADS;
+  // ceil the chunk size
+  size_t chunk = (M / NUM_THREADS) + (M % NUM_THREADS != 0);
 
   for (size_t i = 0; i < NUM_THREADS; i++) {
     args[i] = (struct gemm_args) {
       .start = i * chunk,
       .end = (i + 1) * chunk,
+      .M = M,
       .N = N,
       .K = K,
       .lda = lda,
@@ -153,15 +165,18 @@ void gemm_nn(size_t M, size_t N, size_t K, size_t lda, size_t ldb, size_t ldc,
 // a non transpose, b is transpose
 void gemm_nt(size_t M, size_t N, size_t K, size_t lda, size_t ldb, size_t ldc,
               const float* A, const float* B, float* C, float alpha, float beta) {
-  uint16_t NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  uint16_t MAX_NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  // thread count should be less than or equal to M
+  uint16_t NUM_THREADS = M < MAX_NUM_THREADS ? M : MAX_NUM_THREADS;
   pthread_t threads[NUM_THREADS];
   struct gemm_args args[NUM_THREADS];
-  size_t chunk = M / NUM_THREADS;
+  size_t chunk = (M / NUM_THREADS) + (M % NUM_THREADS != 0);
 
   for (size_t i = 0; i < NUM_THREADS; i++) {
     args[i] = (struct gemm_args) {
       .start = i * chunk,
       .end = (i + 1) * chunk,
+      .M = M,
       .N = N,
       .K = K,
       .lda = lda,
@@ -184,15 +199,18 @@ void gemm_nt(size_t M, size_t N, size_t K, size_t lda, size_t ldb, size_t ldc,
 // a is transpose, b is non transpose
 void gemm_tn(size_t M, size_t N, size_t K, size_t lda, size_t ldb, size_t ldc,
               const float* A, const float* B, float* C, float alpha, float beta) {
-  uint16_t NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  uint16_t MAX_NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  // thread count should be less than or equal to M
+  uint16_t NUM_THREADS = M < MAX_NUM_THREADS ? M : MAX_NUM_THREADS;
   pthread_t threads[NUM_THREADS];
   struct gemm_args args[NUM_THREADS];
-  size_t chunk = M / NUM_THREADS;
+  size_t chunk = (M / NUM_THREADS) + (M % NUM_THREADS != 0);
 
   for (size_t i = 0; i < NUM_THREADS; i++) {
     args[i] = (struct gemm_args) {
       .start = i * chunk,
       .end = (i + 1) * chunk,
+      .M = M,
       .N = N,
       .K = K,
       .lda = lda,
@@ -215,15 +233,18 @@ void gemm_tn(size_t M, size_t N, size_t K, size_t lda, size_t ldb, size_t ldc,
 // a and b are both transpose
 void gemm_tt(size_t M, size_t N, size_t K, size_t lda, size_t ldb, size_t ldc,
              const float* A, const float* B, float* C, float alpha, float beta) {
-  uint16_t NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  uint16_t MAX_NUM_THREADS = sysconf(_SC_NPROCESSORS_ONLN);
+  // thread count should be less than or equal to M
+  uint16_t NUM_THREADS = M < MAX_NUM_THREADS ? M : MAX_NUM_THREADS;
   pthread_t threads[NUM_THREADS];
   struct gemm_args args[NUM_THREADS];
-  size_t chunk = M / NUM_THREADS;
+  size_t chunk = (M / NUM_THREADS) + (M % NUM_THREADS != 0);
 
   for (size_t i = 0; i < NUM_THREADS; i++) {
     args[i] = (struct gemm_args) {
       .start = i * chunk,
       .end = (i + 1) * chunk,
+      .M = M,
       .N = N,
       .K = K,
       .lda = lda,
@@ -276,15 +297,19 @@ void gemm(bool transA, bool transB,
 
 int main(){
 
-  size_t M = 2048;
+  size_t M = 1024;
+  size_t K = 2048;
   size_t N = 2048;
 
-  float* A = (float*)malloc(M * N * sizeof(float));
-  float* B = (float*)malloc(M * N * sizeof(float));
+  float* A = (float*)malloc(M * K * sizeof(float));
+  float* B = (float*)malloc(K * N * sizeof(float));
   float* C = (float*)malloc(M * N * sizeof(float));
 
-  for(size_t i = 0; i < M * N; i++){
+  for(size_t i = 0; i < M * K; i++){
     A[i] = 1.0f;
+  }
+
+  for(size_t i = 0; i < K * N; i++){
     B[i] = 1.0f;
   }
 
@@ -294,26 +319,26 @@ int main(){
   // get time
   printf("Starting gemm_nn\n"); 
   clock_gettime(CLOCK_MONOTONIC, &start);
-  gemm(false, false, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  gemm(false, false, M, N, K, K, N, N, A, B, C, 1.0f, 0.0f);
   clock_gettime(CLOCK_MONOTONIC, &end);
   printf("Finished gemm_nn with time: %lf ns\n\n", get_ns(start, end));
 
   printf("Starting gemm_nt\n");
   clock_gettime(CLOCK_MONOTONIC, &start);
   transpose(M, N, B);
-  gemm(false, true, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  gemm(false, true, M, N, K, K, N, N, A, B, C, 1.0f, 0.0f); 
   clock_gettime(CLOCK_MONOTONIC, &end);
   printf("Finished gemm_nt with time: %lf ns\n\n", get_ns(start, end));
 
   printf("Starting gemm_tn\n");
   clock_gettime(CLOCK_MONOTONIC, &start);
-  gemm(true, false, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  gemm(true, false, M, N, K, K, N, N, A, B, C, 1.0f, 0.0f);
   clock_gettime(CLOCK_MONOTONIC, &end);
   printf("Finished gemm_tn with time: %lf ns\n\n", get_ns(start, end));
 
   printf("Starting gemm_tt\n");
   clock_gettime(CLOCK_MONOTONIC, &start);
-  gemm(true, true, M, N, N, M, N, N, A, B, C, 1.0f, 0.0f);
+  gemm(true, true, M, N, K, K, N, N, A, B, C, 1.0f, 0.0f);
   clock_gettime(CLOCK_MONOTONIC, &end);
   printf("Finished gemm_tt with time: %lf ns\n\n", get_ns(start, end));
 
